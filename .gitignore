@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Local secret overrides — never commit real credentials.
+# scripts/create-secrets.sh writes credentials straight into the cluster
+# as K8s Secrets; nothing here should hold plaintext values.
+.env
+.env.*
+*.local.yaml
+*-secrets.yaml
+secrets/
+
+# Logs / scratch
+*.log
