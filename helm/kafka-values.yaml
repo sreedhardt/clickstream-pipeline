@@ -1,0 +1,51 @@
+# Bitnami Kafka Helm chart values
+# Single-broker KRaft cluster (no Zookeeper needed)
+# https://github.com/bitnami/charts/tree/main/bitnami/kafka
+
+replicaCount: 1
+
+# KRaft mode (default in recent bitnami/kafka)
+kraft:
+  enabled: true
+
+# Combined controller+broker (saves resources on laptop)
+controller:
+  replicaCount: 1
+  resources:
+    limits:
+      memory: 1Gi
+      cpu: "1"
+    requests:
+      memory: 512Mi
+      cpu: "500m"
+
+broker:
+  replicaCount: 0   # 0 = use controller nodes as brokers too
+
+# Disable persistence for local dev (data is ephemeral)
+persistence:
+  enabled: false
+
+# Create our topic automatically on first boot
+provisioning:
+  enabled: true
+  topics:
+    - name: clickstream-events
+      partitions: 3
+      replicationFactor: 1
+      config:
+        retention.ms: "86400000"    # 1 day
+        segment.ms: "3600000"       # 1 hour segments
+
+# Allow plaintext (no auth) for simplicity
+listeners:
+  client:
+    protocol: PLAINTEXT
+  controller:
+    protocol: PLAINTEXT
+  interbroker:
+    protocol: PLAINTEXT
+
+# Service config
+service:
+  type: ClusterIP

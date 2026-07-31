@@ -1,0 +1,50 @@
+# Bitnami PostgreSQL Helm chart values
+# https://github.com/bitnami/charts/tree/main/bitnami/postgresql
+
+auth:
+  database: analytics
+  username: analytics
+  # Credentials come from a K8s Secret created by scripts/create-secrets.sh
+  # (keys: 'password' for the analytics user, 'postgres-password' for the
+  # superuser) — never stored in plaintext in this file or in git.
+  existingSecret: postgres-credentials
+
+primary:
+  resources:
+    limits:
+      memory: 512Mi
+      cpu: "500m"
+    requests:
+      memory: 256Mi
+      cpu: "250m"
+
+  persistence:
+    enabled: true
+    size: 2Gi
+
+  # Run init SQL to create tables on first boot.
+  # Bitnami initdb scripts run as the postgres superuser against the
+  # 'postgres' database, so we must switch to 'analytics' first.
+  initdb:
+    scripts:
+      01_create_tables.sql: |
+        \connect analytics
+
+        CREATE TABLE IF NOT EXISTS analytics_summary (
+            window_start   TIMESTAMPTZ      NOT NULL,
+            window_end     TIMESTAMPTZ      NOT NULL,
+            category       TEXT             NOT NULL,
+            event_count    BIGINT           DEFAULT 0,
+            purchase_count BIGINT           DEFAULT 0,
+            total_revenue  DOUBLE PRECISION DEFAULT 0.0,
+            PRIMARY KEY (window_start, category)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_analytics_window_start
+            ON analytics_summary (window_start DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_analytics_category
+            ON analytics_summary (category);
+
+        -- Grant full access to the analytics user
+        GRANT ALL PRIVILEGES ON TABLE analytics_summary TO analytics;

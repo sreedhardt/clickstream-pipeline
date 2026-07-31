@@ -1,0 +1,212 @@
+# Apache Kafka (KRaft mode) — plain K8s manifests
+# Image: apache/kafka:3.7.0 from Docker Hub (no registry auth needed)
+# Single combined broker+controller node for local development.
+
+---
+# Headless service for stable pod DNS (kafka-0.kafka-headless.streaming...)
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-headless
+  namespace: streaming
+  labels:
+    app: kafka
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: kafka
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: 9092
+    - name: controller
+      port: 9093
+      targetPort: 9093
+
+---
+# Regular ClusterIP service — what clients (Flink, producer) connect to
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: streaming
+  labels:
+    app: kafka
+spec:
+  type: ClusterIP
+  selector:
+    app: kafka
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: 9092
+
+---
+# Single-broker Kafka StatefulSet (KRaft, no Zookeeper)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: streaming
+  labels:
+    app: kafka
+spec:
+  serviceName: kafka-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:3.7.0
+          ports:
+            - containerPort: 9092
+              name: kafka
+            - containerPort: 9093
+              name: controller
+          env:
+            # Node identity
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+
+            # Listeners
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka.streaming.svc.cluster.local:9092"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+
+            # KRaft quorum — single node uses localhost for controller
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@localhost:9093"
+
+            # Replication factors (must be 1 for single broker)
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: "1"
+
+            # Storage
+            - name: KAFKA_LOG_DIRS
+              value: "/var/lib/kafka/data"
+
+            # Retention: 24 hours
+            - name: KAFKA_LOG_RETENTION_HOURS
+              value: "24"
+
+            # Allow topic auto-creation (for convenience)
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+
+            # Group coordinator rebalance delay (0 = faster startup in dev)
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: "0"
+
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 20
+            periodSeconds: 10
+
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 15
+
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+
+---
+# Job to create the clickstream-events topic once Kafka is ready
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topic-init
+  namespace: streaming
+  labels:
+    app: kafka
+spec:
+  ttlSecondsAfterFinished: 120
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Wait until Kafka port 9092 is accepting connections
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Kafka at kafka.streaming.svc.cluster.local:9092..."
+              until nc -z kafka.streaming.svc.cluster.local 9092; do
+                echo "  not ready yet, retrying in 5s..."
+                sleep 5
+              done
+              echo "Kafka is up!"
+      containers:
+        - name: topic-creator
+          image: apache/kafka:3.7.0
+          command:
+            - sh
+            - -c
+            - |
+              /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server kafka.streaming.svc.cluster.local:9092 \
+                --create \
+                --if-not-exists \
+                --topic clickstream-events \
+                --partitions 3 \
+                --replication-factor 1 \
+                --config retention.ms=86400000
+
+              echo "Topic created. Listing all topics:"
+              /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server kafka.streaming.svc.cluster.local:9092 \
+                --list
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
