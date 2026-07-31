@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickstream-producer
+  namespace: streaming
+  labels:
+    app: clickstream-producer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickstream-producer
+  template:
+    metadata:
+      labels:
+        app: clickstream-producer
+    spec:
+      containers:
+        - name: producer
+          image: clickstream-producer:latest
+          imagePullPolicy: Never
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka.streaming.svc.cluster.local:9092"
+            - name: KAFKA_TOPIC
+              value: "clickstream-events"
+            - name: EVENTS_PER_SECOND
+              value: "10"
+            - name: LOG_LEVEL
+              value: "INFO"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
