@@ -1,0 +1,179 @@
+# Flink Session Cluster — JobManager + TaskManager + Services
+# ---------------------------------------------------------------
+# A session cluster stays running and accepts multiple job submissions.
+# Jobs are submitted via the Flink REST API (port 8081).
+
+---
+# ConfigMap with shared Flink configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flink-config
+  namespace: streaming
+data:
+  flink-conf.yaml: |
+    jobmanager.rpc.address: flink-jobmanager
+    jobmanager.rpc.port: 6123
+    jobmanager.memory.process.size: 1024m
+    taskmanager.memory.process.size: 1024m
+    taskmanager.numberOfTaskSlots: 2
+    parallelism.default: 1
+    state.backend: hashmap
+    rest.address: flink-jobmanager
+    rest.port: 8081
+    # Pin blob server to a fixed port so the K8s Service can expose it.
+    # Without this, Flink picks a random ephemeral port that is unreachable
+    # through the Service, causing TaskManagers to fail loading job JARs.
+    blob.server.port: 6124
+  log4j-console.properties: |
+    rootLogger.level = INFO
+    rootLogger.appenderRef.console.ref = ConsoleAppender
+    appender.console.name = ConsoleAppender
+    appender.console.type = CONSOLE
+    appender.console.layout.type = PatternLayout
+    appender.console.layout.pattern = %d{yyyy-MM-dd HH:mm:ss,SSS} %-5p %-60c %x - %m%n
+
+---
+# JobManager Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  namespace: streaming
+  labels:
+    app: flink
+    component: jobmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flink
+      component: jobmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: jobmanager
+    spec:
+      containers:
+        - name: jobmanager
+          image: clickstream-flink:latest
+          imagePullPolicy: Never    # Image is loaded into minikube directly
+          args: ["jobmanager"]
+          ports:
+            - containerPort: 6123
+              name: rpc
+            - containerPort: 8081
+              name: rest
+            - containerPort: 6124
+              name: blob
+          env:
+            - name: JOB_MANAGER_RPC_ADDRESS
+              value: flink-jobmanager
+          volumeMounts:
+            - name: flink-config-volume
+              mountPath: /opt/flink/conf
+          resources:
+            requests:
+              memory: "768Mi"
+              cpu: "250m"
+            limits:
+              memory: "1.5Gi"
+              cpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /overview
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /overview
+              port: 8081
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: flink-config-volume
+          configMap:
+            name: flink-config
+            items:
+              - key: flink-conf.yaml
+                path: flink-conf.yaml
+              - key: log4j-console.properties
+                path: log4j-console.properties
+
+---
+# JobManager Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager
+  namespace: streaming
+  labels:
+    app: flink
+    component: jobmanager
+spec:
+  type: ClusterIP
+  selector:
+    app: flink
+    component: jobmanager
+  ports:
+    - name: rpc
+      port: 6123
+      targetPort: 6123
+    - name: rest
+      port: 8081
+      targetPort: 8081
+    - name: blob
+      port: 6124
+      targetPort: 6124
+
+---
+# TaskManager Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-taskmanager
+  namespace: streaming
+  labels:
+    app: flink
+    component: taskmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flink
+      component: taskmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: taskmanager
+    spec:
+      containers:
+        - name: taskmanager
+          image: clickstream-flink:latest
+          imagePullPolicy: Never
+          args: ["taskmanager"]
+          env:
+            - name: JOB_MANAGER_RPC_ADDRESS
+              value: flink-jobmanager
+          volumeMounts:
+            - name: flink-config-volume
+              mountPath: /opt/flink/conf
+          resources:
+            requests:
+              memory: "768Mi"
+              cpu: "250m"
+            limits:
+              memory: "1.5Gi"
+              cpu: "1"
+      volumes:
+        - name: flink-config-volume
+          configMap:
+            name: flink-config
+            items:
+              - key: flink-conf.yaml
+                path: flink-conf.yaml
+              - key: log4j-console.properties
+                path: log4j-console.properties
