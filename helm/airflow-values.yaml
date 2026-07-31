@@ -1,0 +1,97 @@
+# Apache Airflow Helm chart values
+# https://github.com/apache/airflow/tree/main/chart
+
+# Use our custom image that includes the DAG
+images:
+  airflow:
+    repository: clickstream-airflow
+    tag: latest
+    pullPolicy: Never    # Image is loaded directly into minikube
+
+# Use LocalExecutor to minimize resources (no Celery/Redis needed)
+executor: LocalExecutor
+
+# Secret keys — sourced from K8s Secrets created by scripts/create-secrets.sh
+# (never plaintext in this file). Do NOT also set these via `env`, as that
+# causes a duplicate entry validation error.
+fernetKeySecretName: airflow-fernet-key
+webserverSecretKeySecretName: airflow-webserver-secret-key
+
+env:
+  - name: AIRFLOW__CORE__LOAD_EXAMPLES
+    value: "False"
+
+# Airflow connections — the URI (including its embedded password) is pulled
+# from the airflow-connections Secret, not hardcoded here.
+extraEnv: |
+  - name: AIRFLOW_CONN_POSTGRES_ANALYTICS
+    valueFrom:
+      secretKeyRef:
+        name: airflow-connections
+        key: postgres-analytics-uri
+
+# Minimal resource requests
+webserver:
+  replicas: 1
+  resources:
+    limits:
+      memory: 1Gi
+      cpu: "500m"
+    requests:
+      memory: 512Mi
+      cpu: "250m"
+
+scheduler:
+  resources:
+    limits:
+      memory: 1Gi
+      cpu: "500m"
+    requests:
+      memory: 512Mi
+      cpu: "250m"
+
+# Disable components we don't need
+workers:
+  replicas: 0
+
+# Disable triggerer — only needed for deferred operators, not used in our DAG.
+# This saves ~256MB RAM on a resource-constrained laptop.
+triggerer:
+  enabled: false
+
+# Disable the bundled Bitnami PostgreSQL — its image has the same registry pull
+# issue as Bitnami Kafka did. Use our already-running streaming-postgresql instead.
+postgresql:
+  enabled: false
+
+# Point Airflow's metadata DB at our existing PostgreSQL deployment.
+# We use the postgres superuser so no extra role creation is needed.
+# The full connection URI (including password) lives in the
+# airflow-metadata-connection Secret, created by scripts/create-secrets.sh.
+data:
+  metadataSecretName: airflow-metadata-connection
+
+# Disable git-sync (DAGs are baked into the image)
+dags:
+  persistence:
+    enabled: false
+  gitSync:
+    enabled: false
+
+# Create admin user on startup
+createUserJob:
+  useHelmHooks: true
+  applyCustomEnv: true
+
+# NOTE: the chart has no secret-reference option for defaultUser.password —
+# it must be a literal value here. admin/admin is a well-known, intentional
+# local-only demo login for the Airflow UI (not a real credential to protect);
+# there is nothing behind it beyond a minikube instance on your own laptop.
+defaultUser:
+  enabled: true
+  role: Admin
+  username: admin
+  email: admin@example.com
+  firstName: Admin
+  lastName: User
+  password: admin
